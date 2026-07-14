@@ -42,6 +42,8 @@ const subscriberSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   createdAt: { type: Date, default: Date.now },
   source: { type: String, default: 'landing' },
+  size: { type: String, default: null },        // ex: 'M' — só preenchido quando vem de uma página de produto
+  productCode: { type: String, default: null },  // ex: 'IDP-001'
 });
 
 const Subscriber = mongoose.model('Subscriber', subscriberSchema);
@@ -51,22 +53,34 @@ const Subscriber = mongoose.model('Subscriber', subscriberSchema);
 // Health check — útil pro Railway saber se o serviço está de pé
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
-// Inscrever e-mail
+// Inscrever e-mail (ou atualizar tamanho/produto se já estiver inscrito)
 app.post('/subscribe', subscribeLimiter, async (req, res) => {
   try {
-    const { email, source } = req.body;
+    const { email, source, size, productCode } = req.body;
 
     if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ message: 'E-mail inválido' });
     }
 
-    const subscriber = await Subscriber.create({ email, source });
+    const subscriber = await Subscriber.create({ email, source, size, productCode });
     return res.status(201).json({ message: 'Inscrito com sucesso', id: subscriber._id });
 
   } catch (err) {
-    // Erro de duplicado (índice unique do email)
+    // E-mail já existe: em vez de recusar, atualiza o interesse (tamanho/produto) se vier preenchido
     if (err.code === 11000) {
-      return res.status(409).json({ message: 'Esse e-mail já está cadastrado' });
+      try {
+        const update = {};
+        if (req.body.size) update.size = req.body.size;
+        if (req.body.productCode) update.productCode = req.body.productCode;
+        if (Object.keys(update).length > 0) {
+          await Subscriber.findOneAndUpdate({ email: req.body.email }, update);
+          return res.status(200).json({ message: 'Interesse atualizado' });
+        }
+        return res.status(409).json({ message: 'Esse e-mail já está cadastrado' });
+      } catch (updateErr) {
+        console.error(updateErr);
+        return res.status(500).json({ message: 'Erro no servidor' });
+      }
     }
     console.error(err);
     return res.status(500).json({ message: 'Erro no servidor' });
